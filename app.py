@@ -1,7 +1,12 @@
 import pandas as pd
 import os
+import tkinter as tk
+from tkinter import ttk, messagebox, simpledialog
 from openpyxl import load_workbook
 
+# =========================
+# 📁 文件配置
+# =========================
 INFO_FILE = "info.xlsx"
 TEMPLATE_FILE = "template.xlsx"
 OUTPUT_DIR = "output"
@@ -15,7 +20,7 @@ os.makedirs(OUTPUT_DIR, exist_ok=True)
 
 
 # =========================
-# 🧼 清洗数据（统一 string）
+# 🧼 清洗数据
 # =========================
 def clean(v):
     if pd.isna(v):
@@ -36,8 +41,8 @@ def load_info():
         if PART_COL not in df.columns:
             continue
 
-        for col in df.columns:
-            df[col] = df[col].apply(clean)
+        for c in df.columns:
+            df[c] = df[c].apply(clean)
 
         dfs.append(df)
 
@@ -56,28 +61,25 @@ def search(part, dfs):
         res = df[df[PART_COL] == part]
 
         if not res.empty:
-            row = res.iloc[0]
+            r = res.iloc[0]
             return {
-                "part_number": clean(row[PART_COL]),
-                "description": clean(row.get(DESC_COL, "")),
-                "quantity": clean(row.get(QTY_COL, ""))
+                "part": clean(r[PART_COL]),
+                "desc": clean(r.get(DESC_COL, "")),
+                "qty": clean(r.get(QTY_COL, ""))
             }
 
     return None
 
 
 # =========================
-# 📊 获取 template 列
+# 📊 template列解析
 # =========================
 def get_cols(ws):
-    header_row = 4
     cols = {}
-
     for c in range(1, ws.max_column + 1):
-        v = ws.cell(row=header_row, column=c).value
+        v = ws.cell(row=4, column=c).value
         if v:
             cols[str(v).strip()] = c
-
     return cols
 
 
@@ -92,9 +94,9 @@ def next_row(ws, pn_col):
 
 
 # =========================
-# ✍️ 写入一条 + NO自动编号
+# ✍️ 写入 Excel（含NO）
 # =========================
-def write_item(item):
+def write_to_excel(item):
     wb = load_workbook(TEMPLATE_FILE)
     ws = wb.active
 
@@ -106,25 +108,25 @@ def write_item(item):
     no_col = cols.get(NO_COL)
 
     if not pn_col or not desc_col or not qty_col:
-        raise Exception("template 缺少必要列")
+        raise Exception("template.xlsx 缺少必要列（第4行表头）")
 
     row = next_row(ws, pn_col)
 
-    # 👉 NO 自动递增（核心）
-    no_value = row - 4  # 因为数据从第5行开始
+    # 👉 自动 NO 编号
+    no_value = row - 4
 
     ws.cell(row=row, column=no_col, value=no_value)
-    ws.cell(row=row, column=pn_col, value=item["part_number"])
-    ws.cell(row=row, column=desc_col, value=item["description"])
-    ws.cell(row=row, column=qty_col, value=item["quantity"])
+    ws.cell(row=row, column=pn_col, value=item["part"])
+    ws.cell(row=row, column=desc_col, value=item["desc"])
+    ws.cell(row=row, column=qty_col, value=item["qty"])
 
     wb.save(TEMPLATE_FILE)
 
 
 # =========================
-# 🧹 清空模板数据（保留表头）
+# 🧹 清空模板
 # =========================
-def clear():
+def clear_template():
     wb = load_workbook(TEMPLATE_FILE)
     ws = wb.active
 
@@ -138,7 +140,7 @@ def clear():
 # =========================
 # 📦 导出装箱单
 # =========================
-def export(name=None):
+def export_file(name):
     if not name:
         files = [f for f in os.listdir(OUTPUT_DIR) if f.endswith(".xlsx")]
         name = str(len(files) + 1)
@@ -148,41 +150,113 @@ def export(name=None):
     wb = load_workbook(TEMPLATE_FILE)
     wb.save(path)
 
-    clear()
+    clear_template()
 
-    print(f"\n📦 装箱单生成成功：{path}")
+    return path
 
 
 # =========================
-# 🚀 主流程
+# 🖥 GUI 主程序
 # =========================
-def main():
-    print("🚀 装箱系统启动\n")
+class App:
+    def __init__(self, root):
+        self.root = root
+        self.root.title("📦 装箱扫码系统")
+        self.root.geometry("750x520")
 
-    dfs = load_info()
+        self.data = load_info()
+        self.items = []
 
-    if not dfs:
-        print("❌ info.xlsx 无数据")
-        return
+        # ===== 扫码输入 =====
+        self.input = tk.Entry(root, font=("Arial", 16))
+        self.input.pack(fill=tk.X, padx=10, pady=10)
+        self.input.bind("<Return>", self.scan)
+        self.input.focus_set()
 
-    while True:
-        code = input("📡 扫码（done结束）：").strip()
+        # ===== 状态 =====
+        self.status = tk.Label(root, text="请扫码...", fg="blue")
+        self.status.pack()
 
-        if code.lower() == "done":
-            break
+        # ===== 表格 =====
+        self.tree = ttk.Treeview(
+            root,
+            columns=("no", "part", "desc", "qty"),
+            show="headings"
+        )
 
-        item = search(code, dfs)
+        self.tree.heading("no", text="NO.")
+        self.tree.heading("part", text="料号")
+        self.tree.heading("desc", text="名称")
+        self.tree.heading("qty", text="数量")
 
-        if item:
-            write_item(item)
-            print(f"✅ 已写入：NO自动生成 → {item}")
-        else:
-            print(f"❌ 未找到料号：{code}")
+        self.tree.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
 
-    name = input("\n📝 装箱单名称（回车自动编号）：").strip()
+        # ===== 按钮 =====
+        frame = tk.Frame(root)
+        frame.pack(pady=10)
 
-    export(name if name else None)
+        tk.Button(frame, text="📦 生成装箱单", command=self.export).pack(side=tk.LEFT, padx=5)
+        tk.Button(frame, text="🧹 清空", command=self.reset).pack(side=tk.LEFT, padx=5)
+
+    # =========================
+    # 📡 扫码逻辑
+    # =========================
+    def scan(self, event=None):
+        code = self.input.get().strip()
+        self.input.delete(0, tk.END)
+
+        if not code:
+            return
+
+        item = search(code, self.data)
+
+        if not item:
+            self.status.config(text=f"❌ 未找到：{code}", fg="red")
+            return
+
+        self.items.append(item)
+        write_to_excel(item)
+
+        self.tree.insert("", "end", values=(
+            len(self.items),
+            item["part"],
+            item["desc"],
+            item["qty"]
+        ))
+
+        self.status.config(text=f"✅ 已添加：{item['part']}", fg="green")
+
+    # =========================
+    # 📦 导出
+    # =========================
+    def export(self):
+        name = simpledialog.askstring("文件名", "输入装箱单名称（可空）")
+        path = export_file(name)
+
+        messagebox.showinfo("完成", f"已生成：\n{path}")
+
+        self.tree.delete(*self.tree.get_children())
+        self.items.clear()
+
+        self.status.config(text="已生成装箱单", fg="blue")
+        self.input.focus_set()
+
+    # =========================
+    # 🧹 重置
+    # =========================
+    def reset(self):
+        self.tree.delete(*self.tree.get_children())
+        self.items.clear()
+        clear_template()
+
+        self.status.config(text="已清空", fg="blue")
+        self.input.focus_set()
 
 
+# =========================
+# 🚀 启动
+# =========================
 if __name__ == "__main__":
-    main()
+    root = tk.Tk()
+    app = App(root)
+    root.mainloop()
