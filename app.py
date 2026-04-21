@@ -6,13 +6,16 @@ from openpyxl import load_workbook
 from openpyxl.styles import Alignment
 
 # =========================
-# 📁 基础路径
+# 配置
 # =========================
 BASE_OUTPUT_DIR = "output"
 
 PART_COL = "料号/Part Number"
 DESC_COL = "名称/Description"
 QTY_COL = "数量/Quantity"
+BATCH_COL = "批次/Batch"
+EDITION_COL = "版本/Edition"
+REMARKS_COL = "备注/Remarks"
 NO_COL = "NO."
 
 INFO_FILE = "info.xlsx"
@@ -21,9 +24,6 @@ TEMPLATE_FILE = "template.xlsx"
 os.makedirs(BASE_OUTPUT_DIR, exist_ok=True)
 
 
-# =========================
-# 🧼 清洗
-# =========================
 def clean(v):
     if pd.isna(v):
         return ""
@@ -31,7 +31,7 @@ def clean(v):
 
 
 # =========================
-# 📥 读取数据
+# 数据加载
 # =========================
 def load_info():
     excel = pd.ExcelFile(INFO_FILE)
@@ -52,78 +52,111 @@ def load_info():
 
 
 # =========================
-# 🔍 查找
+# 查找（多结果）
 # =========================
-def search(part, dfs):
+def search_all(part, dfs):
     part = clean(part)
+    results = []
 
     for df in dfs:
-        df[PART_COL] = df[PART_COL].astype(str).apply(clean)
-
         res = df[df[PART_COL] == part]
 
-        if not res.empty:
-            r = res.iloc[0]
-            return {
-                "part": clean(r[PART_COL]),
-                "desc": clean(r.get(DESC_COL, "")),
-                "qty": clean(r.get(QTY_COL, ""))
-            }
+        for _, r in res.iterrows():
+            results.append({
+                "part": clean(r.get(PART_COL)),
+                "desc": clean(r.get(DESC_COL)),
+                "qty": clean(r.get(QTY_COL)),
+                "batch": clean(r.get(BATCH_COL)),
+                "edition": clean(r.get(EDITION_COL)),
+                "remarks": clean(r.get(REMARKS_COL)),
+            })
 
-    return None
-
-
-# =========================
-# 📊 template列
-# =========================
-def get_cols(ws):
-    cols = {}
-    for c in range(1, ws.max_column + 1):
-        v = ws.cell(row=4, column=c).value
-        if v:
-            cols[str(v).strip()] = c
-    return cols
-
-
-def next_row(ws, pn_col):
-    r = 5
-    while ws.cell(row=r, column=pn_col).value:
-        r += 1
-    return r
+    return results
 
 
 # =========================
-# ✍️ 写入
+# 选择窗口（优化UI）
+# =========================
+def select_item_popup(root, items):
+    win = tk.Toplevel(root)
+    win.title("选择物料")
+    win.geometry("900x350")
+
+    tree = ttk.Treeview(
+        win,
+        columns=("part", "desc", "qty", "batch", "edition", "remarks"),
+        show="headings"
+    )
+
+    headers = ["料号", "名称", "数量", "批次", "版本", "备注"]
+    widths = [120, 200, 80, 120, 100, 200]
+
+    for col, txt, w in zip(tree["columns"], headers, widths):
+        tree.heading(col, text=txt)
+        tree.column(col, width=w, anchor="center")
+
+    tree.pack(fill=tk.BOTH, expand=True)
+
+    for item in items:
+        tree.insert("", "end", values=(
+            item["part"], item["desc"], item["qty"],
+            item["batch"], item["edition"], item["remarks"]
+        ))
+
+    selected = {"value": None}
+
+    def confirm():
+        sel = tree.selection()
+        if not sel:
+            return
+        selected["value"] = tree.item(sel[0])["values"]
+        win.destroy()
+
+    tk.Button(win, text="✔ 确定", command=confirm).pack(pady=8)
+
+    win.grab_set()
+    root.wait_window(win)
+
+    return selected["value"]
+
+
+# =========================
+# 写入Excel（居中）
 # =========================
 def write_to_excel(item):
     wb = load_workbook(TEMPLATE_FILE)
     ws = wb.active
 
-    cols = get_cols(ws)
+    cols = {}
+    for c in range(1, ws.max_column + 1):
+        v = ws.cell(row=4, column=c).value
+        if v:
+            cols[str(v).strip()] = c
 
-    row = next_row(ws, cols[PART_COL])
+    r = 5
+    while ws.cell(row=r, column=cols[PART_COL]).value:
+        r += 1
 
-    # 👉 定义居中样式（关键）
-    center_align = Alignment(horizontal="center", vertical="center")
+    align = Alignment(horizontal="center", vertical="center")
 
-    # 写入数据
-    ws.cell(row=row, column=cols[NO_COL], value=row - 4)
-    ws.cell(row=row, column=cols[PART_COL], value=item["part"])
-    ws.cell(row=row, column=cols[DESC_COL], value=item["desc"])
-    ws.cell(row=row, column=cols[QTY_COL], value=item["qty"])
+    mapping = {
+        NO_COL: r - 4,
+        PART_COL: item["part"],
+        DESC_COL: item["desc"],
+        QTY_COL: item["qty"],
+        BATCH_COL: item["batch"],
+        EDITION_COL: item["edition"],
+        REMARKS_COL: item["remarks"],
+    }
 
-    # 👉 设置居中（核心）
-    ws.cell(row=row, column=cols[NO_COL]).alignment = center_align
-    ws.cell(row=row, column=cols[PART_COL]).alignment = center_align
-    ws.cell(row=row, column=cols[DESC_COL]).alignment = center_align
-    ws.cell(row=row, column=cols[QTY_COL]).alignment = center_align
+    for k, v in mapping.items():
+        if k in cols:
+            cell = ws.cell(row=r, column=cols[k], value=v)
+            cell.alignment = align
 
     wb.save(TEMPLATE_FILE)
 
 
-# =========================
-# 🧹 清空
-# =========================
 def clear_template():
     wb = load_workbook(TEMPLATE_FILE)
     ws = wb.active
@@ -135,9 +168,6 @@ def clear_template():
     wb.save(TEMPLATE_FILE)
 
 
-# =========================
-# 📦 导出
-# =========================
 def export_file(output_dir, name):
     if not name:
         files = [f for f in os.listdir(output_dir) if f.endswith(".xlsx")]
@@ -147,44 +177,34 @@ def export_file(output_dir, name):
 
     wb = load_workbook(TEMPLATE_FILE)
     wb.save(path)
-
     clear_template()
 
     return path
 
 
-# =========================
-# 🖨 打印
-# =========================
-def print_file(filepath):
-    try:
-        os.startfile(filepath, "print")
-    except Exception as e:
-        messagebox.showerror("打印失败", str(e))
+def print_file(path):
+    os.startfile(path, "print")
 
 
 # =========================
-# 🖥 GUI
+# GUI 主程序
 # =========================
 class App:
     def __init__(self, root):
         self.root = root
-        self.root.title("📦 装箱系统")
-        self.root.geometry("750x520")
+        self.root.title("📦 装箱系统（升级版）")
+        self.root.geometry("950x550")
 
-        # 👉 启动时输入订单号
         order_no = simpledialog.askstring("订单号", "请输入订单号（可空）")
-        self.root.deiconify()              # 如果被最小化，恢复
-        self.root.lift()                   # 提到最前
+
+        # 修复最小化问题
+        self.root.deiconify()
+        self.root.lift()
         self.root.attributes('-topmost', True)
         self.root.after(100, lambda: self.root.attributes('-topmost', False))
         self.root.focus_force()
 
-        if order_no:
-            self.output_dir = os.path.join(BASE_OUTPUT_DIR, order_no)
-        else:
-            self.output_dir = BASE_OUTPUT_DIR
-
+        self.output_dir = os.path.join(BASE_OUTPUT_DIR, order_no) if order_no else BASE_OUTPUT_DIR
         os.makedirs(self.output_dir, exist_ok=True)
 
         self.data = load_info()
@@ -200,30 +220,53 @@ class App:
         self.status.pack()
 
         # ===== 表格 =====
-        self.tree = ttk.Treeview(root, columns=("no", "part", "desc", "qty"), show="headings")
-        self.tree.heading("no", text="NO.")
-        self.tree.heading("part", text="料号")
-        self.tree.heading("desc", text="名称")
-        self.tree.heading("qty", text="数量")
+        self.tree = ttk.Treeview(
+            root,
+            columns=("no","part","desc","qty","batch","edition","remarks"),
+            show="headings"
+        )
+
+        headers = ["NO.","料号","名称","数量","批次","版本","备注"]
+        widths = [60,120,200,80,120,100,200]
+
+        for col, txt, w in zip(self.tree["columns"], headers, widths):
+            self.tree.heading(col, text=txt)
+            self.tree.column(col, width=w, anchor="center")
+
         self.tree.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
 
         # ===== 按钮 =====
         frame = tk.Frame(root)
         frame.pack(pady=10)
 
-        tk.Button(frame, text="📦 生成装箱单", command=self.export).pack(side=tk.LEFT, padx=5)
-        tk.Button(frame, text="🖨 生成并打印", command=self.export_and_print).pack(side=tk.LEFT, padx=5)
-        tk.Button(frame, text="🧹 清空", command=self.reset).pack(side=tk.LEFT, padx=5)
+        tk.Button(frame, text="📦 生成装箱单", width=18, command=self.export).pack(side=tk.LEFT, padx=5)
+        tk.Button(frame, text="🖨 生成并打印", width=18, command=self.export_and_print).pack(side=tk.LEFT, padx=5)
+        tk.Button(frame, text="🧹 清空", width=12, command=self.reset).pack(side=tk.LEFT, padx=5)
 
     def scan(self, event=None):
         code = self.input.get().strip()
         self.input.delete(0, tk.END)
 
-        item = search(code, self.data)
+        results = search_all(code, self.data)
 
-        if not item:
+        if not results:
             self.status.config(text=f"❌ 未找到：{code}", fg="red")
             return
+
+        if len(results) == 1:
+            item = results[0]
+        else:
+            selected = select_item_popup(self.root, results)
+            if not selected:
+                return
+            item = {
+                "part": selected[0],
+                "desc": selected[1],
+                "qty": selected[2],
+                "batch": selected[3],
+                "edition": selected[4],
+                "remarks": selected[5],
+            }
 
         self.items.append(item)
         write_to_excel(item)
@@ -232,24 +275,24 @@ class App:
             len(self.items),
             item["part"],
             item["desc"],
-            item["qty"]
+            item["qty"],
+            item["batch"],
+            item["edition"],
+            item["remarks"]
         ))
 
         self.status.config(text=f"✅ 已添加：{item['part']}", fg="green")
 
     def export(self):
-        name = simpledialog.askstring("文件名", "输入装箱单名称（可空）")
+        name = simpledialog.askstring("文件名", "输入名称（可空）")
         path = export_file(self.output_dir, name)
-
         messagebox.showinfo("完成", f"已生成：\n{path}")
         self.reset()
 
     def export_and_print(self):
-        name = simpledialog.askstring("文件名", "输入装箱单名称（可空）")
+        name = simpledialog.askstring("文件名", "输入名称（可空）")
         path = export_file(self.output_dir, name)
-
         print_file(path)
-
         messagebox.showinfo("完成", f"已打印：\n{path}")
         self.reset()
 
@@ -260,9 +303,6 @@ class App:
         self.input.focus_set()
 
 
-# =========================
-# 🚀 启动
-# =========================
 if __name__ == "__main__":
     root = tk.Tk()
     app = App(root)
