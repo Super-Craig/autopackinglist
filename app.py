@@ -215,7 +215,7 @@ def print_file(path):
 class App:
     def __init__(self, root):
         self.root = root
-        self.root.title("📦 装箱系统 v2.2")
+        self.root.title("📦 凯实售后装箱系统 v2.2")
         self.root.geometry("950x550")
 
         clear_template()
