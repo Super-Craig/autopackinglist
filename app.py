@@ -38,17 +38,12 @@ def clear_template():
         return
     wb = load_workbook(TEMPLATE_FILE)
     ws = wb.active
-
     for r in ws.iter_rows(min_row=5):
         for c in r:
             c.value = None
-
     wb.save(TEMPLATE_FILE)
 
 
-# =========================
-# 安全列读取
-# =========================
 def safe_cols(ws):
     cols = {}
     for c in range(1, ws.max_column + 1):
@@ -59,38 +54,28 @@ def safe_cols(ws):
 
 
 # =========================
-# 数据加载
+# 数据加载与查询
 # =========================
 def load_info():
     if not os.path.exists(INFO_FILE):
         return []
     excel = pd.ExcelFile(INFO_FILE)
     dfs = []
-
     for sheet in excel.sheet_names:
         df = excel.parse(sheet, dtype=str)
-
         if PART_COL not in df.columns:
             continue
-
         for c in df.columns:
             df[c] = df[c].apply(clean)
-
         dfs.append(df)
-
     return dfs
 
 
-# =========================
-# 多结果查询
-# =========================
 def search_all(part, dfs):
     part = clean(part)
     results = []
-
     for df in dfs:
         res = df[df[PART_COL] == part]
-
         for _, r in res.iterrows():
             results.append({
                 "part": clean(r.get(PART_COL)),
@@ -100,113 +85,66 @@ def search_all(part, dfs):
                 "edition": clean(r.get(EDITION_COL)),
                 "remarks": clean(r.get(REMARKS_COL)),
             })
-
     return results
 
 
-# =========================
-# 选择窗口
-# =========================
 def select_item(root, items):
     win = tk.Toplevel(root)
     win.title("选择物料")
     win.geometry("900x350")
-
-    tree = ttk.Treeview(
-        win,
-        columns=("part","desc","qty","batch","edition","remarks"),
-        show="headings"
-    )
-
+    tree = ttk.Treeview(win, columns=("part","desc","qty","batch","edition","remarks"), show="headings")
     headers = ["料号","名称","数量","批次","版本","备注"]
     widths = [120,200,80,120,100,200]
-
     for col, h, w in zip(tree["columns"], headers, widths):
         tree.heading(col, text=h)
         tree.column(col, width=w, anchor="center")
-
     tree.pack(fill=tk.BOTH, expand=True)
-
     for i in items:
-        tree.insert("", "end", values=(
-            i["part"], i["desc"], i["qty"],
-            i["batch"], i["edition"], i["remarks"]
-        ))
-
+        tree.insert("", "end", values=(i["part"], i["desc"], i["qty"], i["batch"], i["edition"], i["remarks"]))
     result = {"val": None}
-
     def ok():
         sel = tree.selection()
-        if sel:
-            result["val"] = tree.item(sel[0])["values"]
+        if sel: result["val"] = tree.item(sel[0])["values"]
         win.destroy()
-
     tk.Button(win, text="确认", command=ok).pack(pady=5)
-
     win.grab_set()
     root.wait_window(win)
-
     return result["val"]
 
 
 # =========================
-# 写入 Excel
+# Excel 写入逻辑 (支持重写)
 # =========================
-def write_to_excel(item, target_file):
+def write_items_to_excel(items, target_file):
+    """根据 items 列表重写 Excel 整个数据区"""
     wb = load_workbook(target_file)
     ws = wb.active
-
     cols = safe_cols(ws)
+    
+    # 1. 先清空第 5 行及之后的数据
+    for r in ws.iter_rows(min_row=5):
+        for c in r:
+            c.value = None
 
-    pn = cols.get(PART_COL)
-    if not pn:
-        messagebox.showerror("错误", "缺少料号列")
-        return
-
-    r = 5
-    while ws.cell(row=r, column=pn).value:
-        r += 1
-
+    # 2. 重新写入
     align = Alignment(horizontal="center", vertical="center")
-
-    mapping = {
-        NO_COL: r - 4,
-        PART_COL: item["part"],
-        DESC_COL: item["desc"],
-        QTY_COL: item["qty"],
-        BATCH_COL: item["batch"],
-        EDITION_COL: item["edition"],
-        REMARKS_COL: item["remarks"],
-    }
-
-    for k, v in mapping.items():
-        col = cols.get(k)
-        if col:
-            cell = ws.cell(row=r, column=col, value=v)
-            cell.alignment = align
-
+    for i, item in enumerate(items):
+        row_idx = 5 + i
+        mapping = {
+            NO_COL: i + 1,
+            PART_COL: item["part"],
+            DESC_COL: item["desc"],
+            QTY_COL: item["qty"],
+            BATCH_COL: item["batch"],
+            EDITION_COL: item["edition"],
+            REMARKS_COL: item["remarks"],
+        }
+        for k, v in mapping.items():
+            c_idx = cols.get(k)
+            if c_idx:
+                cell = ws.cell(row=row_idx, column=c_idx, value=v)
+                cell.alignment = align
     wb.save(target_file)
-
-
-# =========================
-# 导出 / 打印
-# =========================
-def export_file(dir_path, name):
-    if not name:
-        files = [f for f in os.listdir(dir_path) if f.endswith(".xlsx")]
-        name = str(len(files) + 1)
-
-    path = os.path.join(dir_path, f"{name}.xlsx")
-
-    wb = load_workbook(TEMPLATE_FILE)
-    wb.save(path)
-
-    clear_template()
-    return path
-
-
-def print_file(path):
-    os.startfile(path, "print")
 
 
 # =========================
@@ -215,12 +153,10 @@ def print_file(path):
 class App:
     def __init__(self, root):
         self.root = root
-        self.root.title("📦 凯实售后装箱系统 v2.2")
+        self.root.title("📦 凯实售后装箱系统 v2.4")
         self.root.geometry("950x550")
 
         clear_template()
-
-        # 保持原始弹窗逻辑
         order = simpledialog.askstring("订单号", "请输入订单号（可空）")
 
         self.root.deiconify()
@@ -236,64 +172,42 @@ class App:
         self.items = []
         self.current_file = None
 
-        # 输入
         self.input = tk.Entry(root, font=("Arial", 16))
         self.input.pack(fill=tk.X, padx=10, pady=10)
         self.input.bind("<Return>", self.scan)
         self.input.focus_set()
 
-        self.status = tk.Label(
-            root,
-            text=f"📁 新建模式 | {self.output_dir}",
-            fg="blue"
-        )
+        self.status = tk.Label(root, text=f"📁 新建模式 | {self.output_dir}", fg="blue")
         self.status.pack()
 
-        # 表格
-        self.tree = ttk.Treeview(
-            root,
-            columns=("no","part","desc","qty","batch","edition","remarks"),
-            show="headings"
-        )
-
+        self.tree = ttk.Treeview(root, columns=("no","part","desc","qty","batch","edition","remarks"), show="headings")
         headers = ["NO.","料号","名称","数量","批次","版本","备注"]
         widths = [60,120,200,80,120,100,200]
-
         for c, h, w in zip(self.tree["columns"], headers, widths):
             self.tree.heading(c, text=h)
             self.tree.column(c, width=w, anchor="center")
-
         self.tree.pack(fill=tk.BOTH, expand=True)
 
-        # 按钮容器
-        self.btn_frame = tk.Frame(root)
-        self.btn_frame.pack(pady=10)
+        frame = tk.Frame(root)
+        frame.pack(pady=10)
 
-        tk.Button(self.btn_frame, text="📂 打开已有", width=14, command=self.open_existing).pack(side=tk.LEFT, padx=5)
-        
-        # 定义动态显示的按钮
-        self.btn_export = tk.Button(self.btn_frame, text="📦 生成", width=14, command=self.export)
+        tk.Button(frame, text="📂 打开已有", width=14, command=self.open_existing).pack(side=tk.LEFT, padx=5)
+        self.btn_export = tk.Button(frame, text="📦 生成", width=14, command=self.export)
         self.btn_export.pack(side=tk.LEFT, padx=5)
-        
-        self.btn_print = tk.Button(self.btn_frame, text="🖨 生成并打印", width=16, command=self.export_print)
+        self.btn_print = tk.Button(frame, text="🖨 生成并打印", width=16, command=self.export_print)
         self.btn_print.pack(side=tk.LEFT, padx=5)
 
-        # 编辑模式独占：保存按钮（默认隐藏）
-        self.btn_save_close = tk.Button(self.btn_frame, text="💾 保存并关闭", width=16, command=self.save_and_close, bg="#e3f2fd")
+        # 编辑模式按钮
+        self.btn_save_close = tk.Button(frame, text="💾 保存并关闭", width=16, command=self.save_and_close, bg="#e3f2fd")
 
-        # 公共按钮
-        self.btn_clear = tk.Button(self.btn_frame, text="🧹 清空", width=10, command=self.reset)
-        self.btn_clear.pack(side=tk.LEFT, padx=5)
+        # 原“清空”按钮改名为“删除选中”
+        self.btn_delete = tk.Button(frame, text="❌ 删除选中", width=14, command=self.delete_selected, fg="red")
+        self.btn_delete.pack(side=tk.LEFT, padx=5)
 
-    # =========================
-    # 扫码
-    # =========================
     def scan(self, event=None):
         code = self.input.get().strip()
         self.input.delete(0, tk.END)
-
         res = search_all(code, self.data)
-
         if not res:
             self.status.config(text=f"❌ 未找到 {code}", fg="red")
             return
@@ -302,114 +216,125 @@ class App:
             item = res[0]
         else:
             sel = select_item(self.root, res)
-            if not sel:
-                return
+            if not sel: return
             item = dict(zip(["part","desc","qty","batch","edition","remarks"], sel))
 
         self.items.append(item)
-
+        
+        # 实时写入 Excel
         target = self.current_file if self.current_file else TEMPLATE_FILE
-        write_to_excel(item, target)
+        write_items_to_excel(self.items, target)
 
         self.tree.insert("", "end", values=(
-            len(self.items),
-            item["part"], item["desc"], item["qty"],
+            len(self.items), item["part"], item["desc"], item["qty"],
             item["batch"], item["edition"], item["remarks"]
         ))
-
         self.status.config(text=f"✅ 已录入 {item['part']}", fg="green")
 
-    # =========================
-    # 打开已有
-    # =========================
-    def open_existing(self):
-        path = filedialog.askopenfilename(filetypes=[("Excel","*.xlsx")])
-        if not path:
+    def delete_selected(self):
+        """逐条删除选中的项"""
+        selected = self.tree.selection()
+        if not selected:
+            messagebox.showwarning("提示", "请先在表格中选择要删除的行")
             return
 
-        self.current_file = path
+        if not messagebox.askyesno("确认", "确定要删除选中的行吗？"):
+            return
 
+        # 获取所有选中行的索引
+        indices = sorted([self.tree.index(item) for item in selected], reverse=True)
+        
+        # 从数据列表和表格中移除
+        for idx in indices:
+            del self.items[idx]
+        
+        for item in selected:
+            self.tree.delete(item)
+
+        # 重新排序 Treeview 的序号列
+        for i, child in enumerate(self.tree.get_children()):
+            vals = list(self.tree.item(child, 'values'))
+            vals[0] = i + 1  # 更新 NO.
+            self.tree.item(child, values=vals)
+
+        # 同步更新 Excel 文件
+        target = self.current_file if self.current_file else TEMPLATE_FILE
+        write_items_to_excel(self.items, target)
+        
+        self.status.config(text="⚠️ 已删除选中项并同步文件", fg="orange")
+
+    def open_existing(self):
+        path = filedialog.askopenfilename(filetypes=[("Excel","*.xlsx")])
+        if not path: return
+        self.current_file = path
         wb = load_workbook(path)
         ws = wb.active
-
         self.tree.delete(*self.tree.get_children())
         self.items.clear()
-
         cols = safe_cols(ws)
-
         pn = cols.get(PART_COL)
         if not pn:
             messagebox.showerror("错误", "缺少料号列")
             return
-
         r = 5
         while ws.cell(row=r, column=pn).value:
             item = {
-                "part": ws.cell(row=r, column=cols.get(PART_COL)).value,
-                "desc": ws.cell(row=r, column=cols.get(DESC_COL)).value,
-                "qty": ws.cell(row=r, column=cols.get(QTY_COL)).value,
-                "batch": ws.cell(row=r, column=cols.get(BATCH_COL)).value if cols.get(BATCH_COL) else "",
-                "edition": ws.cell(row=r, column=cols.get(EDITION_COL)).value if cols.get(EDITION_COL) else "",
-                "remarks": ws.cell(row=r, column=cols.get(REMARKS_COL)).value if cols.get(REMARKS_COL) else "",
+                "part": clean(ws.cell(row=r, column=cols.get(PART_COL)).value),
+                "desc": clean(ws.cell(row=r, column=cols.get(DESC_COL)).value),
+                "qty": clean(ws.cell(row=r, column=cols.get(QTY_COL)).value),
+                "batch": clean(ws.cell(row=r, column=cols.get(BATCH_COL)).value) if cols.get(BATCH_COL) else "",
+                "edition": clean(ws.cell(row=r, column=cols.get(EDITION_COL)).value) if cols.get(EDITION_COL) else "",
+                "remarks": clean(ws.cell(row=r, column=cols.get(REMARKS_COL)).value) if cols.get(REMARKS_COL) else "",
             }
-
             self.items.append(item)
-
-            self.tree.insert("", "end", values=(
-                len(self.items),
-                item["part"], item["desc"], item["qty"],
-                item["batch"], item["edition"], item["remarks"]
-            ))
-
+            self.tree.insert("", "end", values=(len(self.items), item["part"], item["desc"], item["qty"], item["batch"], item["edition"], item["remarks"]))
             r += 1
 
         self.status.config(text=f"📄 编辑模式：{os.path.basename(path)}", fg="green")
-        
-        # 切换按钮：隐藏生成，显示保存
         self.btn_export.pack_forget()
         self.btn_print.pack_forget()
-        self.btn_save_close.pack(side=tk.LEFT, padx=5, before=self.btn_clear)
+        self.btn_save_close.pack(side=tk.LEFT, padx=5, before=self.btn_delete)
 
-    # =========================
-    # 动作逻辑
-    # =========================
     def save_and_close(self):
-        # 扫码时已实时保存，此处仅作提示并退出
         messagebox.showinfo("完成", f"更改已成功保存至：\n{os.path.basename(self.current_file)}")
-        self.reset()
+        self.reset_ui()
 
     def export(self):
-        if not self.items:
-            messagebox.showwarning("警告", "列表为空，无法生成")
-            return
+        if not self.items: return
         name = simpledialog.askstring("文件名", "输入名称")
-        path = export_file(self.output_dir, name)
+        if not name:
+            files = [f for f in os.listdir(self.output_dir) if f.endswith(".xlsx")]
+            name = str(len(files) + 1)
+        path = os.path.join(self.output_dir, f"{name}.xlsx")
+        wb = load_workbook(TEMPLATE_FILE)
+        wb.save(path)
         messagebox.showinfo("完成", f"已生成文件：\n{path}")
-        self.reset()
+        self.reset_ui()
 
     def export_print(self):
-        if not self.items:
-            messagebox.showwarning("警告", "列表为空，无法打印")
-            return
+        if not self.items: return
         name = simpledialog.askstring("文件名", "输入名称")
-        path = export_file(self.output_dir, name)
-        print_file(path)
+        if not name:
+            files = [f for f in os.listdir(self.output_dir) if f.endswith(".xlsx")]
+            name = str(len(files) + 1)
+        path = os.path.join(self.output_dir, f"{name}.xlsx")
+        wb = load_workbook(TEMPLATE_FILE)
+        wb.save(path)
+        os.startfile(path, "print")
         messagebox.showinfo("完成", f"已打印并生成文件：\n{path}")
-        self.reset()
+        self.reset_ui()
 
-    def reset(self):
-        # 彻底清空显示条目
+    def reset_ui(self):
+        """恢复到初始新建状态"""
         self.tree.delete(*self.tree.get_children())
         self.items.clear()
         clear_template()
         self.current_file = None
         self.input.focus_set()
         self.status.config(text=f"📁 新建模式 | {self.output_dir}", fg="blue")
-        
-        # 恢复默认按钮布局
         self.btn_save_close.pack_forget()
-        self.btn_export.pack(side=tk.LEFT, padx=5, before=self.btn_clear)
-        self.btn_print.pack(side=tk.LEFT, padx=5, before=self.btn_clear)
+        self.btn_export.pack(side=tk.LEFT, padx=5, before=self.btn_delete)
+        self.btn_print.pack(side=tk.LEFT, padx=5, before=self.btn_delete)
 
 
 if __name__ == "__main__":
