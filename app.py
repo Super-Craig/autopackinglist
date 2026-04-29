@@ -4,6 +4,7 @@ import tkinter as tk
 from tkinter import ttk, messagebox, simpledialog, filedialog
 from openpyxl import load_workbook
 from openpyxl.styles import Alignment
+from collections import defaultdict
 
 # =========================
 # 配置
@@ -28,48 +29,44 @@ os.makedirs(BASE_OUTPUT_DIR, exist_ok=True)
 # 工具
 # =========================
 def clean(v):
-    if pd.isna(v):
-        return ""
+    if pd.isna(v): return ""
     return str(v).strip()
 
+def to_int(v):
+    """尝试将数量转换为整数，失败则返回0"""
+    try:
+        return int(float(str(v).strip()))
+    except:
+        return 0
 
 def clear_template():
-    if not os.path.exists(TEMPLATE_FILE):
-        return
+    if not os.path.exists(TEMPLATE_FILE): return
     wb = load_workbook(TEMPLATE_FILE)
     ws = wb.active
     for r in ws.iter_rows(min_row=5):
-        for c in r:
-            c.value = None
+        for c in r: c.value = None
     wb.save(TEMPLATE_FILE)
-
 
 def safe_cols(ws):
     cols = {}
     for c in range(1, ws.max_column + 1):
         v = ws.cell(row=4, column=c).value
-        if v:
-            cols[str(v).strip()] = c
+        if v: cols[str(v).strip()] = c
     return cols
 
-
 # =========================
-# 数据加载与查询
+# 数据逻辑
 # =========================
 def load_info():
-    if not os.path.exists(INFO_FILE):
-        return []
+    if not os.path.exists(INFO_FILE): return []
     excel = pd.ExcelFile(INFO_FILE)
     dfs = []
     for sheet in excel.sheet_names:
         df = excel.parse(sheet, dtype=str)
-        if PART_COL not in df.columns:
-            continue
-        for c in df.columns:
-            df[c] = df[c].apply(clean)
+        if PART_COL not in df.columns: continue
+        for c in df.columns: df[c] = df[c].apply(clean)
         dfs.append(df)
     return dfs
-
 
 def search_all(part, dfs):
     part = clean(part)
@@ -87,58 +84,18 @@ def search_all(part, dfs):
             })
     return results
 
-
-def select_item(root, items):
-    win = tk.Toplevel(root)
-    win.title("选择物料")
-    win.geometry("900x350")
-    tree = ttk.Treeview(win, columns=("part","desc","qty","batch","edition","remarks"), show="headings")
-    headers = ["料号","名称","数量","批次","版本","备注"]
-    widths = [120,200,80,120,100,200]
-    for col, h, w in zip(tree["columns"], headers, widths):
-        tree.heading(col, text=h)
-        tree.column(col, width=w, anchor="center")
-    tree.pack(fill=tk.BOTH, expand=True)
-    for i in items:
-        tree.insert("", "end", values=(i["part"], i["desc"], i["qty"], i["batch"], i["edition"], i["remarks"]))
-    result = {"val": None}
-    def ok():
-        sel = tree.selection()
-        if sel: result["val"] = tree.item(sel[0])["values"]
-        win.destroy()
-    tk.Button(win, text="确认", command=ok).pack(pady=5)
-    win.grab_set()
-    root.wait_window(win)
-    return result["val"]
-
-
-# =========================
-# Excel 写入逻辑 (支持重写)
-# =========================
 def write_items_to_excel(items, target_file):
-    """根据 items 列表重写 Excel 整个数据区"""
     wb = load_workbook(target_file)
     ws = wb.active
     cols = safe_cols(ws)
-    
-    # 1. 先清空第 5 行及之后的数据
     for r in ws.iter_rows(min_row=5):
-        for c in r:
-            c.value = None
-
-    # 2. 重新写入
+        for c in r: c.value = None
     align = Alignment(horizontal="center", vertical="center")
     for i, item in enumerate(items):
         row_idx = 5 + i
-        mapping = {
-            NO_COL: i + 1,
-            PART_COL: item["part"],
-            DESC_COL: item["desc"],
-            QTY_COL: item["qty"],
-            BATCH_COL: item["batch"],
-            EDITION_COL: item["edition"],
-            REMARKS_COL: item["remarks"],
-        }
+        mapping = {NO_COL: i + 1, PART_COL: item["part"], DESC_COL: item["desc"], 
+                   QTY_COL: item["qty"], BATCH_COL: item["batch"], 
+                   EDITION_COL: item["edition"], REMARKS_COL: item["remarks"]}
         for k, v in mapping.items():
             c_idx = cols.get(k)
             if c_idx:
@@ -146,15 +103,48 @@ def write_items_to_excel(items, target_file):
                 cell.alignment = align
     wb.save(target_file)
 
+# =========================
+# 对比窗口
+# =========================
+class CompareWin:
+    def __init__(self, root, missing, extra):
+        win = tk.Toplevel(root)
+        win.title("🔍 装箱差异对比报告")
+        win.geometry("800x600")
+
+        # 漏装表格
+        tk.Label(win, text="❌ 漏装/未装足 (需补货)", fg="red", font=("Arial", 12, "bold")).pack(pady=5)
+        self.create_tree(win, missing, ["料号", "缺口数量"]).pack(fill=tk.BOTH, expand=True, padx=10)
+
+        # 多装表格
+        tk.Label(win, text="➕ 多装/不在清单内 (需核实)", fg="green", font=("Arial", 12, "bold")).pack(pady=5)
+        self.create_tree(win, extra, ["料号", "多出数量"]).pack(fill=tk.BOTH, expand=True, padx=10)
+
+    def create_tree(self, parent, data, headers):
+        frame = tk.Frame(parent)
+        tree = ttk.Treeview(frame, columns=headers, show="headings", height=8)
+        for h in headers:
+            tree.heading(h, text=h)
+            tree.column(h, anchor="center")
+        
+        scroll = ttk.Scrollbar(frame, orient="vertical", command=tree.yview)
+        tree.configure(yscrollcommand=scroll.set)
+        
+        for item in data:
+            tree.insert("", "end", values=item)
+            
+        tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        scroll.pack(side=tk.RIGHT, fill=tk.Y)
+        return frame
 
 # =========================
-# GUI
+# 主程序
 # =========================
 class App:
     def __init__(self, root):
         self.root = root
-        self.root.title("📦 凯实售后装箱系统 v2.4")
-        self.root.geometry("950x550")
+        self.root.title("📦 装箱系统 v2.5 (带对比功能)")
+        self.root.geometry("950x600")
 
         clear_template()
         order = simpledialog.askstring("订单号", "请输入订单号（可空）")
@@ -191,18 +181,20 @@ class App:
         frame = tk.Frame(root)
         frame.pack(pady=10)
 
-        tk.Button(frame, text="📂 打开已有", width=14, command=self.open_existing).pack(side=tk.LEFT, padx=5)
-        self.btn_export = tk.Button(frame, text="📦 生成", width=14, command=self.export)
+        tk.Button(frame, text="📂 打开已有", width=12, command=self.open_existing).pack(side=tk.LEFT, padx=5)
+        self.btn_export = tk.Button(frame, text="📦 生成", width=12, command=self.export)
         self.btn_export.pack(side=tk.LEFT, padx=5)
-        self.btn_print = tk.Button(frame, text="🖨 生成并打印", width=16, command=self.export_print)
+        self.btn_print = tk.Button(frame, text="🖨 生成并打印", width=14, command=self.export_print)
         self.btn_print.pack(side=tk.LEFT, padx=5)
 
-        # 编辑模式按钮
-        self.btn_save_close = tk.Button(frame, text="💾 保存并关闭", width=16, command=self.save_and_close, bg="#e3f2fd")
-
-        # 原“清空”按钮改名为“删除选中”
-        self.btn_delete = tk.Button(frame, text="❌ 删除选中", width=14, command=self.delete_selected, fg="red")
+        self.btn_save_close = tk.Button(frame, text="💾 保存并关闭", width=14, command=self.save_and_close, bg="#e3f2fd")
+        
+        # 删除按钮
+        self.btn_delete = tk.Button(frame, text="❌ 删除选中", width=12, command=self.delete_selected, fg="red")
         self.btn_delete.pack(side=tk.LEFT, padx=5)
+
+        # 对比按钮
+        tk.Button(frame, text="📊 差异对比", width=12, command=self.run_comparison, bg="#fff9c4").pack(side=tk.LEFT, padx=5)
 
     def scan(self, event=None):
         code = self.input.get().strip()
@@ -211,131 +203,155 @@ class App:
         if not res:
             self.status.config(text=f"❌ 未找到 {code}", fg="red")
             return
-
-        if len(res) == 1:
-            item = res[0]
+        if len(res) == 1: item = res[0]
         else:
-            sel = select_item(self.root, res)
-            if not sel: return
-            item = dict(zip(["part","desc","qty","batch","edition","remarks"], sel))
+            from tkinter import Toplevel
+            win = Toplevel(self.root)
+            win.title("选择物料")
+            tree = ttk.Treeview(win, columns=("part","desc","qty","batch","edition","remarks"), show="headings")
+            for h in ["料号","名称","数量","批次","版本","备注"]:
+                tree.heading(h, text=h); tree.column(h, width=120, anchor="center")
+            tree.pack(fill=tk.BOTH, expand=True)
+            for i in res: tree.insert("", "end", values=(i["part"], i["desc"], i["qty"], i["batch"], i["edition"], i["remarks"]))
+            res_val = {"v": None}
+            def ok():
+                sel = tree.selection()
+                if sel: res_val["v"] = tree.item(sel[0])["values"]
+                win.destroy()
+            tk.Button(win, text="确认", command=ok).pack()
+            win.grab_set(); self.root.wait_window(win)
+            if not res_val["v"]: return
+            item = dict(zip(["part","desc","qty","batch","edition","remarks"], res_val["v"]))
 
         self.items.append(item)
-        
-        # 实时写入 Excel
         target = self.current_file if self.current_file else TEMPLATE_FILE
         write_items_to_excel(self.items, target)
-
-        self.tree.insert("", "end", values=(
-            len(self.items), item["part"], item["desc"], item["qty"],
-            item["batch"], item["edition"], item["remarks"]
-        ))
+        self.tree.insert("", "end", values=(len(self.items), item["part"], item["desc"], item["qty"], item["batch"], item["edition"], item["remarks"]))
         self.status.config(text=f"✅ 已录入 {item['part']}", fg="green")
 
     def delete_selected(self):
-        """逐条删除选中的项"""
         selected = self.tree.selection()
-        if not selected:
-            messagebox.showwarning("提示", "请先在表格中选择要删除的行")
-            return
-
-        if not messagebox.askyesno("确认", "确定要删除选中的行吗？"):
-            return
-
-        # 获取所有选中行的索引
+        if not selected: return
+        if not messagebox.askyesno("确认", "确定要删除选中行吗？"): return
         indices = sorted([self.tree.index(item) for item in selected], reverse=True)
-        
-        # 从数据列表和表格中移除
-        for idx in indices:
-            del self.items[idx]
-        
-        for item in selected:
-            self.tree.delete(item)
-
-        # 重新排序 Treeview 的序号列
+        for idx in indices: del self.items[idx]
+        for item in selected: self.tree.delete(item)
         for i, child in enumerate(self.tree.get_children()):
             vals = list(self.tree.item(child, 'values'))
-            vals[0] = i + 1  # 更新 NO.
+            vals[0] = i + 1
             self.tree.item(child, values=vals)
-
-        # 同步更新 Excel 文件
         target = self.current_file if self.current_file else TEMPLATE_FILE
         write_items_to_excel(self.items, target)
+        self.status.config(text="⚠️ 已删除并同步文件", fg="orange")
+
+    def run_comparison(self):
+        """核心对比功能"""
+        # 1. 汇总 Info 需求
+        info_total = defaultdict(int)
+        for df in self.data:
+            for _, row in df.iterrows():
+                pn = clean(row.get(PART_COL))
+                if pn: info_total[pn] += to_int(row.get(QTY_COL))
+
+        if not info_total:
+            messagebox.showerror("错误", "info.xlsx 没有任何有效数据")
+            return
+
+        # 2. 选择目录汇总已装箱
+        dir_path = filedialog.askdirectory(title="选择要对比的装箱单目录", initialdir=BASE_OUTPUT_DIR)
+        if not dir_path: return
+
+        packed_total = defaultdict(int)
+        files = [f for f in os.listdir(dir_path) if f.endswith(".xlsx") and f != "info.xlsx" and f != "template.xlsx"]
         
-        self.status.config(text="⚠️ 已删除选中项并同步文件", fg="orange")
+        for f in files:
+            try:
+                wb = load_workbook(os.path.join(dir_path, f), data_only=True)
+                ws = wb.active
+                cols = safe_cols(ws)
+                pn_col = cols.get(PART_COL)
+                qty_col = cols.get(QTY_COL)
+                if not pn_col or not qty_col: continue
+
+                r = 5
+                while ws.cell(row=r, column=pn_col).value:
+                    pn = clean(ws.cell(row=r, column=pn_col).value)
+                    qty = to_int(ws.cell(row=r, column=qty_col).value)
+                    packed_total[pn] += qty
+                    r += 1
+            except: continue
+
+        # 3. 比较
+        missing = []
+        extra = []
+        all_parts = set(info_total.keys()) | set(packed_total.keys())
+
+        for p in sorted(all_parts):
+            ideal = info_total.get(p, 0)
+            actual = packed_total.get(p, 0)
+            diff = actual - ideal
+            if diff < 0: missing.append((p, abs(diff)))
+            elif diff > 0: extra.append((p, diff))
+
+        if not missing and not extra:
+            messagebox.showinfo("对比完成", "✨ 完美！所有装箱单与清单完全一致。")
+        else:
+            CompareWin(self.root, missing, extra)
 
     def open_existing(self):
         path = filedialog.askopenfilename(filetypes=[("Excel","*.xlsx")])
         if not path: return
         self.current_file = path
-        wb = load_workbook(path)
+        wb = load_workbook(path, data_only=True)
         ws = wb.active
         self.tree.delete(*self.tree.get_children())
         self.items.clear()
         cols = safe_cols(ws)
         pn = cols.get(PART_COL)
-        if not pn:
-            messagebox.showerror("错误", "缺少料号列")
-            return
+        if not pn: return
         r = 5
         while ws.cell(row=r, column=pn).value:
-            item = {
-                "part": clean(ws.cell(row=r, column=cols.get(PART_COL)).value),
-                "desc": clean(ws.cell(row=r, column=cols.get(DESC_COL)).value),
-                "qty": clean(ws.cell(row=r, column=cols.get(QTY_COL)).value),
-                "batch": clean(ws.cell(row=r, column=cols.get(BATCH_COL)).value) if cols.get(BATCH_COL) else "",
-                "edition": clean(ws.cell(row=r, column=cols.get(EDITION_COL)).value) if cols.get(EDITION_COL) else "",
-                "remarks": clean(ws.cell(row=r, column=cols.get(REMARKS_COL)).value) if cols.get(REMARKS_COL) else "",
-            }
+            item = {"part": clean(ws.cell(row=r, column=cols.get(PART_COL)).value),
+                    "desc": clean(ws.cell(row=r, column=cols.get(DESC_COL)).value),
+                    "qty": clean(ws.cell(row=r, column=cols.get(QTY_COL)).value),
+                    "batch": clean(ws.cell(row=r, column=cols.get(BATCH_COL)).value) if cols.get(BATCH_COL) else "",
+                    "edition": clean(ws.cell(row=r, column=cols.get(EDITION_COL)).value) if cols.get(EDITION_COL) else "",
+                    "remarks": clean(ws.cell(row=r, column=cols.get(REMARKS_COL)).value) if cols.get(REMARKS_COL) else ""}
             self.items.append(item)
             self.tree.insert("", "end", values=(len(self.items), item["part"], item["desc"], item["qty"], item["batch"], item["edition"], item["remarks"]))
             r += 1
-
         self.status.config(text=f"📄 编辑模式：{os.path.basename(path)}", fg="green")
-        self.btn_export.pack_forget()
-        self.btn_print.pack_forget()
+        self.btn_export.pack_forget(); self.btn_print.pack_forget()
         self.btn_save_close.pack(side=tk.LEFT, padx=5, before=self.btn_delete)
 
     def save_and_close(self):
-        messagebox.showinfo("完成", f"更改已成功保存至：\n{os.path.basename(self.current_file)}")
+        messagebox.showinfo("完成", "更改已保存。")
         self.reset_ui()
 
     def export(self):
         if not self.items: return
         name = simpledialog.askstring("文件名", "输入名称")
-        if not name:
-            files = [f for f in os.listdir(self.output_dir) if f.endswith(".xlsx")]
-            name = str(len(files) + 1)
-        path = os.path.join(self.output_dir, f"{name}.xlsx")
-        wb = load_workbook(TEMPLATE_FILE)
-        wb.save(path)
-        messagebox.showinfo("完成", f"已生成文件：\n{path}")
+        path = os.path.join(self.output_dir, f"{name if name else 'new'}.xlsx")
+        wb = load_workbook(TEMPLATE_FILE); wb.save(path)
+        messagebox.showinfo("完成", f"已生成：{path}")
         self.reset_ui()
 
     def export_print(self):
         if not self.items: return
         name = simpledialog.askstring("文件名", "输入名称")
-        if not name:
-            files = [f for f in os.listdir(self.output_dir) if f.endswith(".xlsx")]
-            name = str(len(files) + 1)
-        path = os.path.join(self.output_dir, f"{name}.xlsx")
-        wb = load_workbook(TEMPLATE_FILE)
-        wb.save(path)
+        path = os.path.join(self.output_dir, f"{name if name else 'new'}.xlsx")
+        wb = load_workbook(TEMPLATE_FILE); wb.save(path)
         os.startfile(path, "print")
-        messagebox.showinfo("完成", f"已打印并生成文件：\n{path}")
+        messagebox.showinfo("完成", "已打印。")
         self.reset_ui()
 
     def reset_ui(self):
-        """恢复到初始新建状态"""
-        self.tree.delete(*self.tree.get_children())
-        self.items.clear()
-        clear_template()
-        self.current_file = None
-        self.input.focus_set()
+        self.tree.delete(*self.tree.get_children()); self.items.clear()
+        clear_template(); self.current_file = None
         self.status.config(text=f"📁 新建模式 | {self.output_dir}", fg="blue")
         self.btn_save_close.pack_forget()
         self.btn_export.pack(side=tk.LEFT, padx=5, before=self.btn_delete)
         self.btn_print.pack(side=tk.LEFT, padx=5, before=self.btn_delete)
-
 
 if __name__ == "__main__":
     root = tk.Tk()
